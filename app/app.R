@@ -656,6 +656,16 @@ server <- function(input, output, session) {
   })
 
   # ---- Download ----
+  downloadButton <- function(...) {
+    tag <- shiny::downloadButton(...)
+    # fix downloads with shinylive on Chromium browsers
+    # https://github.com/posit-dev/r-shinylive/issues/74
+    tag$attribs$download <- NULL
+    # drop target = "_blank" so the download doesn't pop open a new browser
+    # https://github.com/rstudio/shiny/issues/2020
+    tag$attribs$target <- NULL
+    tag
+  }
   output$download_ui <- renderUI({
     req(length(valid_results()) > 0)
     downloadButton("download", "Download edited SVG(s)")
