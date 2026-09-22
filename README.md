@@ -22,7 +22,7 @@ The placeholders go in the presentation attributes, and the literal fallbacks go
 
 - **The placeholder must be in the attribute, not in `style=""`.** Qt5 (the renderer QGIS draws with) applies a presentation attribute *on top of* `style=""`, the reverse of the CSS cascade.
 - **The root needs the literals.** A `param()` is not a valid paint value, so every spec-compliant renderer ignores the attribute. Inheriting from the root applies it throughout the image.
-- **`param(outline-width)` carries no default.** With no default QGIS keeps its own 0.2 mm and the width spinbox still enables.
+- **`param(outline-width)` carries a default, in millimetres.** QGIS reads this in millimetres (`0.2` placeholder).
 - **Properties are promoted out of the stylesheet before it is commented out.** Qt ignores `<style>` blocks entirely. Promoting these properties ensures they aren't silently discarded.
 
 `param(fill)` stays off by default. QGIS turns a param default into a `QColor`, and `QColor("none")` is invalid and reports itself as `#000000`, so pairing `param(fill)` with a "no fill" default floods line art solid black. The app warns if you combine the two.
@@ -44,6 +44,7 @@ Push to `main` → `.github/workflows/deploy.yml` runs `shinylive::export("app",
 - Only simple CSS selectors can be promoted: an optional type (or `*`) plus any number of `.class` / `#id` tokens. A selector using a combinator, attribute test, or pseudo-class is reported in the UI and left behind rather than matched incorrectly, and a stylesheet containing an at-rule (`@media`, `@font-face`) is skipped wholesale.
 - On a shape, the sidebar is authoritative for `fill` / `stroke` / `stroke-width`: values the file already declares for those three are replaced, not preserved. Everything else the file declares is kept.
 - A `<style>` block that itself contains `--` cannot be wrapped in an XML comment; those blocks are left in place and the user is warned. Properties are still promoted out of them, but in a renderer that honours stylesheets the live rules will outrank the promoted presentation attributes.
+- QGIS stores stroke width in millimetres and does not scale it with the marker size, so no single default is right everywhere.
 - The literal fallbacks on the root `<svg>` are inherited by *every* descendant, not just the shapes the app rewrites.
 - Opened directly in a Qt-based viewer (rather than through QGIS) the file draws nothing, because Qt resolves the invalid `stroke-width` to zero instead of inheriting.
 

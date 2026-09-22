@@ -292,11 +292,11 @@ rewrite_tag <- function(tagtxt, rules, spec, is_root = FALSE) {
     } else {
       spec$stroke_value
     }
-    # Deliberately no default: QGIS reads a stroke-width default as millimetres,
-    # not user units, so `param(outline-width) 2` becomes a 2 mm stroke. With no
-    # default QGIS keeps its own 0.2 mm and the width spinbox still enables.
+    # QGIS reads a stroke-width default as millimetres, not user units, so this
+    # default is a millimetre figure and is deliberately a different number from
+    # the user-unit fallback written on the root below.
     attrs[["stroke-width"]] <- if (isTRUE(spec$param_sw)) {
-      "param(outline-width)"
+      paste0("param(outline-width) ", spec$sw_mm)
     } else {
       spec$sw_value
     }
@@ -487,10 +487,16 @@ ui <- fluidPage(
         # "none" and the stroke colour picker is ignored.
         checkboxInput("stroke_none", "No stroke", value = FALSE)
       ),
-      numericInput("sw_value", "Stroke width default", value = 2, min = 0, step = 0.5),
-      helpText("In SVG user units, and used only outside QGIS. When stroke-width is a",
-               "parameter the placeholder is written with no default so QGIS ignores",
-               "this number and keeps its own 0.2 mm default"),
+      numericInput("sw_value", "Stroke width, SVG user units", value = 2,
+                   min = 0, step = 0.5),
+      helpText("The weight the artwork is drawn at. Used outside QGIS only, so it",
+               "should match the original."),
+      numericInput("sw_mm", "Stroke width in QGIS, mm", value = 0.2,
+                   min = 0, step = 0.05),
+      helpText("QGIS stores stroke width in millimetres and does not scale it with",
+               "the marker size, so pick this for the size you expect to place the",
+               "symbol at: roughly 0.2 mm suits a 3 mm marker, 2 mm suits a 25 mm",
+               "one. Cannot be left empty."),
       checkboxInput("short_hex", "Shorten colours (#000000 \u2192 #000)", value = TRUE),
 
       tags$hr(),
@@ -538,17 +544,19 @@ server <- function(input, output, session) {
       if (isTRUE(input$short_hex)) shorten_hex(col) else col
     }
   })
-  sw_default <- reactive({
-    v <- or_else(input$sw_value, 2)
-    # Drop a trailing ".0" so 2 prints as "2", not "2.0".
-    format(v, trim = TRUE, drop0trailing = TRUE)
-  })
+  # Drop a trailing ".0" so 2 prints as "2", not "2.0".
+  num_str <- function(v) format(v, trim = TRUE, drop0trailing = TRUE)
+  sw_default <- reactive(num_str(or_else(input$sw_value, 2)))
+  # The QGIS default is a millimetre figure, a different quantity from the
+  # user-unit fallback above. Never allowed to be empty.
+  sw_mm_default <- reactive(num_str(or_else(input$sw_mm, 0.2)))
 
   spec <- reactive({
     list(
       param_fill   = isTRUE(input$param_fill),   fill_value   = fill_default(),
       param_stroke = isTRUE(input$param_stroke), stroke_value = stroke_default(),
-      param_sw     = isTRUE(input$param_sw),     sw_value     = sw_default()
+      param_sw     = isTRUE(input$param_sw),     sw_value     = sw_default(),
+      sw_mm        = sw_mm_default()
     )
   })
 
