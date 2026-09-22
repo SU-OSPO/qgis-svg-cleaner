@@ -2,14 +2,16 @@
 #
 # For each uploaded SVG it reproduces the QGIS "dynamic SVG" edit:
 #   1. Each drawable shape (path/line/polyline/polygon/rect/circle/ellipse) gets
-#      fill / stroke / stroke-width written twice: once as an ordinary
-#      presentation attribute holding a literal value, and (when desired by the user)
-#      once more inside style="" as a QGIS placeholder. QGIS reads the placeholder;
-#      every other renderer discards it and falls back to the presentation attribute.
-#      The QGIS parameter names are fixed by QGIS:
+#      fill / stroke / stroke-width as presentation attributes, holding either a
+#      QGIS placeholder or a literal. The parameter names are fixed by QGIS:
 #         fill         -> param(fill)
 #         stroke       -> param(outline)
 #         stroke-width -> param(outline-width)
+#      The matching literals are also written on the root <svg>. A param() is
+#      not a valid paint value, so outside QGIS the attribute is ignored and the
+#      property inherits from the root instead of falling back to its initial
+#      value -- which is what stops the file rendering blank everywhere but
+#      QGIS. The placeholders must sit in the attributes rather than in style="".
 #   2. Optionally, every other property in a <style> rule (e.g., stroke-linecap,
 #      stroke-linejoin) is copied onto the elements that rule matches.
 #   3. Every <style>...</style> block is commented out, but kept for reference.
@@ -224,7 +226,7 @@ format_attrs <- function(nv) {
 # Rewrite one start tag. `spec` carries the sidebar choices; `rules` is the
 # parsed stylesheet (empty when promotion is off). Tags that need no change are
 # returned byte-for-byte so the edit stays a small diff.
-rewrite_tag <- function(tagtxt, rules, spec) {
+rewrite_tag <- function(tagtxt, rules, spec, is_root = FALSE) {
   inner <- substring(tagtxt, 2L, nchar(tagtxt) - 1L)
   self_close <- grepl("/\\s*$", inner)
   inner <- sub("/\\s*$", "", inner)
@@ -258,7 +260,7 @@ rewrite_tag <- function(tagtxt, rules, spec) {
   css <- css[!(names(css) %in% c(OWN_PROPS, names(own_style)))]
 
   is_shape <- tag %in% SHAPE_TAGS
-  if (!is_shape && !length(css)) return(tagtxt)      # nothing to do here
+  if (!is_shape && !is_root && !length(css)) return(tagtxt)   # nothing to do here
 
   # On a shape the sidebar is authoritative for fill / stroke / stroke-width, so
   # drop any the element already declares inline -- otherwise they would outrank
@@ -269,30 +271,45 @@ rewrite_tag <- function(tagtxt, rules, spec) {
   for (p in names(css)[names(css) %in% PRESENTATION_ATTRS]) attrs[p] <- css[[p]]
   spill <- css[!(names(css) %in% PRESENTATION_ATTRS)]
 
-  # style="" order matters: promoted properties, then the element's own inline
-  # style, then the QGIS params last. QGIS takes the last declaration it
-  # understands; a spec-compliant renderer drops the param() ones as invalid and
-  # falls back to what came before, and to the presentation attributes.
+  # Promoted properties first, then the element's own inline style, which by the
+  # CSS cascade outranks them. No QGIS params go in here -- they live in the
+  # presentation attributes.
   style <- c(if (length(spill)) paste0(names(spill), ":", spill),
              if (length(own_style)) paste0(names(own_style), ":", own_style))
 
+  # The placeholders go in the presentation attributes, never in style="".
+  # Qt5 (the renderer QGIS draws with) applies a presentation attribute on
+  # top of style="", so a literal attribute would override whatever QGIS
+  # substituted into style and the symbol would never change colour on the map.
   if (is_shape) {
-    attrs[["fill"]] <- spec$fill_value
-    attrs[["stroke"]] <- spec$stroke_value
-    attrs[["stroke-width"]] <- spec$sw_value
-    # No space after the colon: QgsSvgCache::containsElemParams tests the raw
-    # value with startsWith("param(") and does not trim it first, so a space
-    # renders correctly but leaves the QGIS controls permanently greyed out.
-    if (isTRUE(spec$param_fill)) {
-      style <- c(style, paste0("fill:param(fill) ", spec$fill_value))
+    attrs[["fill"]] <- if (isTRUE(spec$param_fill)) {
+      paste0("param(fill) ", spec$fill_value)
+    } else {
+      spec$fill_value
     }
-    if (isTRUE(spec$param_stroke)) {
-      style <- c(style, paste0("stroke:param(outline) ", spec$stroke_value))
+    attrs[["stroke"]] <- if (isTRUE(spec$param_stroke)) {
+      paste0("param(outline) ", spec$stroke_value)
+    } else {
+      spec$stroke_value
     }
     # Deliberately no default: QGIS reads a stroke-width default as millimetres,
     # not user units, so `param(outline-width) 2` becomes a 2 mm stroke. With no
     # default QGIS keeps its own 0.2 mm and the width spinbox still enables.
-    if (isTRUE(spec$param_sw)) style <- c(style, "stroke-width:param(outline-width)")
+    attrs[["stroke-width"]] <- if (isTRUE(spec$param_sw)) {
+      "param(outline-width)"
+    } else {
+      spec$sw_value
+    }
+  }
+
+  # A param() is not a valid paint value, so outside QGIS the attribute above is
+  # ignored and the property falls back to whatever it inherits. Putting the
+  # literals on the root <svg> gives it something real to inherit, which is what
+  # keeps the file from rendering blank in Inkscape, browsers, and Illustrator.
+  if (is_root) {
+    attrs[["fill"]] <- spec$fill_value
+    attrs[["stroke"]] <- spec$stroke_value
+    attrs[["stroke-width"]] <- spec$sw_value
   }
 
   if (length(style)) {
@@ -301,9 +318,15 @@ rewrite_tag <- function(tagtxt, rules, spec) {
     attrs <- attrs[names(attrs) != "style"]
   }
 
-  attrs <- attrs[c(intersect(OWN_PROPS, names(attrs)),
-                   setdiff(names(attrs), c(OWN_PROPS, "style")),
-                   intersect("style", names(attrs)))]
+  # Shapes lead with fill/stroke/stroke-width; on the root they go last so
+  # xmlns and viewBox keep their usual place.
+  attrs <- attrs[if (is_root) {
+    c(setdiff(names(attrs), c(OWN_PROPS, "style")),
+      intersect(OWN_PROPS, names(attrs)), intersect("style", names(attrs)))
+  } else {
+    c(intersect(OWN_PROPS, names(attrs)),
+      setdiff(names(attrs), c(OWN_PROPS, "style")), intersect("style", names(attrs)))
+  }]
   paste0("<", tag, if (length(attrs)) paste0(" ", format_attrs(attrs)) else "",
          if (self_close) "/" else "", ">")
 }
@@ -318,12 +341,16 @@ rewrite_elements <- function(svg, rules, spec) {
 
   pieces <- character(0)
   pos <- 1L
+  seen_svg <- FALSE
   for (k in seq_along(m)) {
     start <- m[k]
     end <- start + lens[k] - 1L
     if (in_protected(start, spans)) next
+    tagtxt <- substring(svg, start, end)
+    is_root <- !seen_svg && grepl("^<svg[\\s/>]", tagtxt, perl = TRUE)
+    if (is_root) seen_svg <- TRUE
     pieces <- c(pieces, substring(svg, pos, start - 1L),
-                rewrite_tag(substring(svg, start, end), rules, spec))
+                rewrite_tag(tagtxt, rules, spec, is_root))
     pos <- end + 1L
   }
   paste0(c(pieces, substring(svg, pos, nchar(svg))), collapse = "")
@@ -461,8 +488,9 @@ ui <- fluidPage(
         checkboxInput("stroke_none", "No stroke", value = FALSE)
       ),
       numericInput("sw_value", "Stroke width default", value = 2, min = 0, step = 0.5),
-      helpText("Used for the plain stroke-width attribute. QGIS reads this number as",
-               "millimetres."),
+      helpText("In SVG user units, and used only outside QGIS. When stroke-width is a",
+               "parameter the placeholder is written with no default so QGIS ignores",
+               "this number and keeps its own 0.2 mm default"),
       checkboxInput("short_hex", "Shorten colours (#000000 \u2192 #000)", value = TRUE),
 
       tags$hr(),
